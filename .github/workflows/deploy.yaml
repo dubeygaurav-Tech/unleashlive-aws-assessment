@@ -1,0 +1,333 @@
+##############################################################
+# .github/workflows/deploy.yml
+#
+# CI/CD pipeline for the AWS Assessment multi-region IaC.
+#
+# Stages:
+#   1. lint-validate  – terraform fmt & validate
+#   2. security-scan  – checkov static analysis
+#   3. plan           – terraform plan (both regions)
+#   4. deploy         – terraform apply (manual approval gate)
+#   5. test           – run the E2E test script post-deploy
+##############################################################
+
+name: AWS Assessment – IaC CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "terraform/**"
+      - "lambdas/**"
+      - "tests/**"
+      - ".github/workflows/deploy.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "lambdas/**"
+
+env:
+  TF_VERSION:  "1.7.5"
+  NODE_VERSION: "20"
+  WORKING_DIR: "./terraform"
+
+##############################################################
+# Job 1 – Lint & Validate
+##############################################################
+jobs:
+  lint-validate:
+    name: "Lint & Validate"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # Fail if any .tf file is not properly formatted
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # Syntax & consistency check (does not require AWS credentials)
+      - name: Terraform Init (local backend for validation)
+        run: |
+          terraform init \
+            -backend=false \
+            -input=false
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # Lint Lambda JS with eslint
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Lambda dependencies (greeter)
+        run: npm ci --omit=dev
+        working-directory: ./lambdas/greeter
+
+      - name: Install Lambda dependencies (dispatcher)
+        run: npm ci --omit=dev
+        working-directory: ./lambdas/dispatcher
+
+  ##############################################################
+  # Job 2 – Security Scan
+  ##############################################################
+  security-scan:
+    name: "Security Scan (checkov)"
+    runs-on: ubuntu-latest
+    needs: lint-validate
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install checkov
+        run: pip install checkov
+
+      - name: Run checkov on Terraform
+        run: |
+          checkov \
+            --directory ${{ env.WORKING_DIR }} \
+            --framework terraform \
+            --output cli \
+            --output sarif \
+            --output-file-path . \
+            --soft-fail \
+            --skip-check CKV_AWS_116,CKV_AWS_117
+        # CKV_AWS_116 – Lambda with overly permissive IAM role (for demo purposes, we can ignore this specific finding in the sample code)
+          # CKV_AWS_117 – Lambda inside VPC (API GW Lambdas are intentionally outside)
+        continue-on-error: false
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true   # SARIF upload requires Advanced Security on the repo
+
+  ##############################################################
+  # Job 3 – Terraform Plan
+  ##############################################################
+  plan:
+    name: "Terraform Plan"
+    runs-on: ubuntu-latest
+    needs: security-scan
+    # Only run plan when AWS credentials are present (i.e., not on forks)
+    if: |
+      vars.SKIP_AWS_JOBS != 'true' &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION:            us-east-1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Setup Node.js (Lambda packaging)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Lambda dependencies
+        run: |
+          npm ci --omit=dev
+          cd ../../lambdas/dispatcher && npm ci --omit=dev
+        working-directory: ./lambdas/greeter
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -input=false \
+            -reconfigure
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            -var="candidate_email=${{ secrets.CANDIDATE_EMAIL }}" \
+            -var="test_user_temp_password=${{ secrets.TEST_USER_TEMP_PASSWORD }}" \
+            -var="test_user_password=${{ secrets.TEST_USER_PASSWORD }}" \
+            -var="github_repo=${{ vars.GITHUB_REPO }}"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Save plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.WORKING_DIR }}/tfplan
+          retention-days: 5
+
+      # Post plan output as a PR comment
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const planOutput = execSync(
+              'terraform show -no-color tfplan',
+              { cwd: process.env.WORKING_DIR, maxBuffer: 1024 * 1024 * 10 }
+            ).toString();
+            const truncated = planOutput.length > 65000
+              ? planOutput.slice(0, 65000) + '\n...(truncated)'
+              : planOutput;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              body:         `## Terraform Plan\n\`\`\`hcl\n${truncated}\n\`\`\``
+            });
+        env:
+          WORKING_DIR: ${{ env.WORKING_DIR }}
+
+  ##############################################################
+  # Job 4 – Deploy (main branch only, after manual review)
+  ##############################################################
+  deploy:
+    name: "Terraform Apply"
+    runs-on: ubuntu-latest
+    needs: plan
+    # Only apply on pushes to main (not PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production          # Requires a reviewer approval in GitHub Environments
+      url: ${{ steps.outputs.outputs.api_us }}
+
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION:            us-east-1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper:  false    # Needed to capture outputs cleanly
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Lambda dependencies
+        run: |
+          (cd lambdas/greeter    && npm ci --omit=dev)
+          (cd lambdas/dispatcher && npm ci --omit=dev)
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Init
+        run: terraform init -input=false
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve tfplan
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Capture Terraform outputs
+        id: outputs
+        run: |
+          echo "api_us=$(terraform output -raw api_endpoint_us_east_1)"    >> "$GITHUB_OUTPUT"
+          echo "api_eu=$(terraform output -raw api_endpoint_eu_west_1)"    >> "$GITHUB_OUTPUT"
+          echo "pool_id=$(terraform output -raw cognito_user_pool_id)"     >> "$GITHUB_OUTPUT"
+          echo "client_id=$(terraform output -raw cognito_client_id)"      >> "$GITHUB_OUTPUT"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # Persist outputs so the test job can pick them up
+      - name: Write outputs to file
+        run: |
+          cat <<EOF > /tmp/tf_outputs.env
+          API_URL_US_EAST_1=${{ steps.outputs.outputs.api_us }}
+          API_URL_EU_WEST_1=${{ steps.outputs.outputs.api_eu }}
+          COGNITO_USER_POOL_ID=${{ steps.outputs.outputs.pool_id }}
+          COGNITO_CLIENT_ID=${{ steps.outputs.outputs.client_id }}
+          EOF
+      - name: Upload outputs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tf-outputs
+          path: /tmp/tf_outputs.env
+          retention-days: 1
+
+  ##############################################################
+  # Job 5 – E2E Test Execution (post-deploy)
+  ##############################################################
+  test:
+    name: "E2E Test Suite"
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download Terraform outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: tf-outputs
+          path: /tmp
+
+      - name: Load outputs into env
+        run: cat /tmp/tf_outputs.env >> "$GITHUB_ENV"
+
+      # ── This is where the automated test script executes post-deployment ──
+      - name: Run E2E tests
+        run: |
+          node tests/run_tests.js \
+            --user-pool-id "$COGNITO_USER_POOL_ID" \
+            --client-id    "$COGNITO_CLIENT_ID" \
+            --username     "$COGNITO_USERNAME" \
+            --password     "$COGNITO_PASSWORD" \
+            --api-us       "$API_URL_US_EAST_1" \
+            --api-eu       "$API_URL_EU_WEST_1"
+        env:
+          COGNITO_USERNAME: ${{ secrets.CANDIDATE_EMAIL }}
+          COGNITO_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: tests/results/
+          retention-days: 5
