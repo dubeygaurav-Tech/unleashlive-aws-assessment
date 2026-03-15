@@ -18,11 +18,11 @@ terraform {
 
   # Remote state – update bucket/table names before first apply
   backend "s3" {
-    bucket       = "aws-assessment-tfremotestate-bucket"
-    key          = "global/terraform.tfstate"
-    region       = "us-east-1"
-    use_lockfile = true
-    encrypt      = true
+    bucket         = "aws-assessment-tfremotestate-bucket"
+    key            = "global/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "aws-assessment-tflock"
+    encrypt        = true
   }
 }
 
