@@ -233,11 +233,11 @@ resource "aws_lambda_function" "dispatcher" {
 
   environment {
     variables = {
-      ECS_CLUSTER_ARN        = aws_ecs_cluster.main.arn
-      TASK_DEFINITION_ARN    = aws_ecs_task_definition.publisher.arn
-      SUBNET_IDS             = join(",", aws_subnet.public[*].id)
-      SECURITY_GROUP_ID      = aws_security_group.fargate_task.id
-      AWS_EXECUTING_REGION   = var.aws_region
+      ECS_CLUSTER_ARN      = aws_ecs_cluster.main.arn
+      TASK_DEFINITION_ARN  = aws_ecs_task_definition.publisher.arn
+      SUBNET_IDS           = join(",", aws_subnet.public[*].id)
+      SECURITY_GROUP_ID    = aws_security_group.fargate_task.id
+      AWS_EXECUTING_REGION = var.aws_region
     }
   }
 
@@ -324,17 +324,17 @@ resource "aws_apigatewayv2_stage" "default" {
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gw.arn
-    format          = jsonencode({
-      requestId       = "$context.requestId"
-      ip              = "$context.identity.sourceIp"
-      caller          = "$context.identity.caller"
-      user            = "$context.identity.user"
-      requestTime     = "$context.requestTime"
-      httpMethod      = "$context.httpMethod"
-      resourcePath    = "$context.resourcePath"
-      status          = "$context.status"
-      protocol        = "$context.protocol"
-      responseLength  = "$context.responseLength"
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      caller         = "$context.identity.caller"
+      user           = "$context.identity.user"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      resourcePath   = "$context.resourcePath"
+      status         = "$context.status"
+      protocol       = "$context.protocol"
+      responseLength = "$context.responseLength"
     })
   }
 

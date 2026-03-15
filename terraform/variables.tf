@@ -7,7 +7,7 @@ variable "project" {
 variable "candidate_email" {
   description = "Your email address (used for Cognito test user and SNS payloads)"
   type        = string
-  default    = "dubeygaurav.tech@gmail.com"
+  default     = "dubeygaurav.tech@gmail.com"
 }
 
 variable "test_user_temp_password" {
@@ -25,7 +25,7 @@ variable "test_user_password" {
 variable "github_repo" {
   description = "GitHub repository URL for SNS payloads"
   type        = string
-  default     = "https://github.com/gauravsingh/aws-assessment"
+  default     = "https://github.com/dubeygaurav-Tech/unleashlive-aws-assessment"
 }
 
 variable "candidate_sns_topic_arn" {
