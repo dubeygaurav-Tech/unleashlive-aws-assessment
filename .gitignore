@@ -1,0 +1,35 @@
+# Terraform
+terraform/.terraform/*
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+terraform.tfvars
+*.tfstate
+*.tfstate.backup
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Lambda builds
+terraform/modules/compute/builds/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets
+*.pem
+*.key
+.env
