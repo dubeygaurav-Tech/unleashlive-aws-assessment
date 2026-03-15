@@ -1,30 +1,4 @@
 #!/usr/bin/env node
-/**
- * test/run_tests.js
- *
- * Automated end-to-end test script for the AWS Assessment.
- *
- * Steps:
- *  1. Authenticates with Cognito (us-east-1) to obtain a JWT.
- *  2. Concurrently calls GET /greet on BOTH regions.
- *  3. Concurrently calls POST /dispatch on BOTH regions.
- *  4. Asserts that each response's "region" field matches the expected region.
- *  5. Reports latency for all requests to demonstrate geographic difference.
- *
- * Usage:
- *   node run_tests.js \
- *     --user-pool-id <POOL_ID> \
- *     --client-id <CLIENT_ID> \
- *     --username <EMAIL> \
- *     --password <PASSWORD> \
- *     --api-us <https://xxx.execute-api.us-east-1.amazonaws.com> \
- *     --api-eu <https://yyy.execute-api.eu-west-1.amazonaws.com>
- *
- *   OR set environment variables:
- *     COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID,
- *     COGNITO_USERNAME, COGNITO_PASSWORD,
- *     API_URL_US_EAST_1, API_URL_EU_WEST_1
- */
 
 "use strict";
 
@@ -54,7 +28,7 @@ const missing = Object.entries(config)
   .map(([k]) => k);
 
 if (missing.length) {
-  console.error(`\n❌  Missing required config: ${missing.join(", ")}`);
+  console.error(`\n  Missing required config: ${missing.join(", ")}`);
   console.error("    Set via CLI flags or environment variables.\n");
   process.exit(1);
 }
